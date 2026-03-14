@@ -1,0 +1,145 @@
+Ótima pergunta! Como você já tem um agente que qualifica leads e agenda reuniões, a ideia é dar a ele uma **custom tool** que, além de criar o evento no Google Calendar, também cria os schedules de lembrete automaticamente. Aqui está o fluxo completo:
+
+```python
+import httpx
+from datetime import datetime, timedelta
+from agno.agent import Agent
+from agno.db.postgres import PostgresDb
+from agno.models.openai import OpenAIChat
+from agno.tools.googlecalendar import GoogleCalendarTools
+from agno.tools.whatsapp import WhatsAppTools
+from agno.os import AgentOS
+from agno.scheduler import ScheduleManager
+
+db = PostgresDb(db_url="postgresql+psycopg://ai:ai@localhost:5532/ai")
+mgr = ScheduleManager(db)
+
+# ---------------------------------------------------------------
+# Custom tool: cria evento + schedules de lembrete
+# ---------------------------------------------------------------
+def agendar_reuniao_com_lembretes(
+    titulo: str,
+    data_reuniao: str,  # formato "YYYY-MM-DD"
+    hora_reuniao: str,  # formato "HH:MM"
+    telefone_cliente: str,
+    nome_cliente: str,
+):
+    """
+    Agenda reunião no Google Calendar e cria lembretes
+    automáticos via WhatsApp para 1 dia útil antes e no dia.
+    """
+    from datetime import date
+    import numpy as np
+
+    reuniao_date = datetime.strptime(f"{data_reuniao} {hora_reuniao}", "%Y-%m-%d %H:%M")
+
+    # Calcular 1 dia útil antes
+    dia_antes = reuniao_date - timedelta(days=1)
+    while dia_antes.weekday() >= 5:  # pula sábado/domingo
+        dia_antes -= timedelta(days=1)
+
+    # Lembrete 1 dia útil antes (às 9h)
+    mgr.create(
+        name=f"lembrete-1d-{nome_cliente}-{data_reuniao}",
+        cron=f"0 9 {dia_antes.day} {dia_antes.month} *",
+        endpoint="/agents/whatsapp-notifier/runs",
+        payload={
+            "message": f"Envie uma mensagem WhatsApp para {telefone_cliente} "
+                       f"lembrando {nome_cliente} que AMANHÃ às {hora_reuniao} "
+                       f"ele tem uma reunião/ligação com nosso especialista. "
+                       f"Título: {titulo}"
+        },
+        timezone="America/Sao_Paulo",
+        description=f"Lembrete 1 dia antes para {nome_cliente}",
+        if_exists="update",
+    )
+
+    # Lembrete no dia da reunião (às 9h)
+    mgr.create(
+        name=f"lembrete-dia-{nome_cliente}-{data_reuniao}",
+        cron=f"0 9 {reuniao_date.day} {reuniao_date.month} *",
+        endpoint="/agents/whatsapp-notifier/runs",
+        payload={
+            "message": f"Envie uma mensagem WhatsApp para {telefone_cliente} "
+                       f"lembrando {nome_cliente} que HOJE às {hora_reuniao} "
+                       f"ele tem uma reunião/ligação com nosso especialista. "
+                       f"Título: {titulo}"
+        },
+        timezone="America/Sao_Paulo",
+        description=f"Lembrete no dia para {nome_cliente}",
+        if_exists="update",
+    )
+
+    return f"Lembretes criados para {nome_cliente}: 1 dia útil antes ({dia_antes.strftime('%d/%m')}) e no dia ({data_reuniao})"
+
+
+# ---------------------------------------------------------------
+# Seu agente existente de qualificação + agendamento
+# ---------------------------------------------------------------
+lead_agent = Agent(
+    id="lead-qualifier",
+    model=OpenAIChat(id="gpt-4o"),
+    tools=[
+        GoogleCalendarTools(
+            credentials_path="credentials.json",
+            oauth_port=8080,
+            allow_update=True,
+        ),
+        agendar_reuniao_com_lembretes,  # <-- custom tool
+    ],
+    instructions=[
+        "Você é um agente de qualificação de leads.",
+        "Quando o lead estiver qualificado, agende a reunião com nosso especialista.",
+        "Use o GoogleCalendarTools para criar o evento no calendário.",
+        "SEMPRE use a tool 'agendar_reuniao_com_lembretes' após criar o evento "
+        "para configurar os lembretes automáticos via WhatsApp.",
+    ],
+    add_datetime_to_context=True,
+    db=db,
+)
+
+# ---------------------------------------------------------------
+# Agente notificador (disparado pelo Scheduler)
+# ---------------------------------------------------------------
+whatsapp_notifier = Agent(
+    id="whatsapp-notifier",
+    model=OpenAIChat(id="gpt-4o-mini"),
+    tools=[WhatsAppTools()],
+    instructions=[
+        "Envie mensagens de lembrete amigáveis via WhatsApp.",
+        "Inclua data, hora e detalhes da reunião.",
+    ],
+    db=db,
+)
+
+# ---------------------------------------------------------------
+# AgentOS com Scheduler
+# ---------------------------------------------------------------
+app = AgentOS(
+    agents=[lead_agent, whatsapp_notifier],
+    db=db,
+    scheduler=True,
+    scheduler_poll_interval=15,
+).get_app()
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=7777)
+```
+
+### Fluxo resumido:
+
+1. **Lead chega** → `lead-qualifier` qualifica e agenda a reunião
+2. **Cria evento** no Google Calendar via `GoogleCalendarTools`
+3. **Chama `agendar_reuniao_com_lembretes`** → cria 2 schedules no `ScheduleManager`:
+   - **1 dia útil antes** às 9h → dispara `whatsapp-notifier`
+   - **No dia da reunião** às 9h → dispara `whatsapp-notifier`
+4. **Scheduler do AgentOS** executa automaticamente nos horários e o `whatsapp-notifier` envia as mensagens
+
+A chave é a **custom tool** que o seu agente existente chama após criar o evento — ela usa o `ScheduleManager` para criar os cron jobs programaticamente, conforme documentado nas páginas [Scheduler](/scheduler/overview) e [Demo do Scheduler](/examples/agent-os/scheduler/demo).
+
+```suggestions
+(Scheduler - Visão geral)[/scheduler/overview]
+(Scheduler programático - Demo)[/examples/agent-os/scheduler/demo]
+(Custom Tools)[/examples/tools/custom-tools]
+```

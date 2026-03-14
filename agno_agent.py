@@ -17,7 +17,10 @@ agno_auction = Agent(
     additional_context=AGENT_KNOWLEDGE,
     add_datetime_to_context=True,
     add_history_to_context=True,
-    num_history_runs=3,
+    enable_session_summaries=True,           
+    add_session_summary_to_context=True,
+    num_history_runs=10,
+    read_chat_history=True,
     markdown=True,
 
 )
@@ -28,3 +31,15 @@ agent_os = AgentOS(
 )
 
 app = agent_os.get_app()
+
+# Configure CORS to allow AgentOS dashboard to connect
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["https://os.agno.com", "http://localhost:8000"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
