@@ -1,10 +1,14 @@
+from dotenv import load_dotenv
+
 from agno.agent import Agent
 from agno.db.sqlite import SqliteDb
 from agno.models.anthropic import Claude
 from agno.os import AgentOS
-#from agno.os.interfaces.whatsapp import Whatsapp
+from agno.os.interfaces.whatsapp import Whatsapp
 
 from prompts import AGENT_DESCRIPTION, AGENT_INSTRUCTIONS, AGENT_KNOWLEDGE
+
+load_dotenv()
 
 agent_db = SqliteDb(db_file="agno.db")
 
@@ -27,13 +31,11 @@ agno_auction = Agent(
 
 agent_os = AgentOS(
     agents=[agno_auction],
-    ###interfaces=[Whatsapp(agent=agno_auction)],
+    interfaces=[Whatsapp(agent=agno_auction)],
 )
-
 app = agent_os.get_app()
 
 # Configure CORS to allow AgentOS dashboard to connect
-from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 app.add_middleware(
@@ -43,3 +45,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+if __name__ == "__main__":
+    agent_os.serve(app="agno_agent:app", reload=True)
